@@ -1,15 +1,21 @@
 from functools import partial
 
+import django
+from django.conf import settings
 from django.db import connection, models
 from django.db.backends.postgresql.schema import (
     DatabaseSchemaEditor as CoreDatabaseSchemaEditor
 )
 from django.test import override_settings
+from django.utils.module_loading import import_string
 
 import pytest
-from django_zero_downtime_migrations_postgres_backend.schema import (
-    DatabaseSchemaEditor, UnsafeOperationException, UnsafeOperationWarning
+from django_zero_downtime_migrations.backends.postgres.schema import (
+    UnsafeOperationException, UnsafeOperationWarning
 )
+
+DatabaseSchemaEditor = import_string(settings.DATABASES['default']['ENGINE'] + '.schema.DatabaseSchemaEditor')
+
 
 START_TIMEOUTS = [
     'SET statement_timeout TO \'0\';',
@@ -76,6 +82,13 @@ class cmp_schema_editor:
         return getattr(self.editor, self.method)(*args, **kwargs)
 
 
+@pytest.fixture(autouse=True)
+def zero_timeouts():
+    with override_settings(ZERO_DOWNTIME_MIGRATIONS_LOCK_TIMEOUT=0):
+        with override_settings(ZERO_DOWNTIME_MIGRATIONS_STATEMENT_TIMEOUT=0):
+            yield
+
+
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_create_model__ok():
     with cmp_schema_editor() as editor:
@@ -91,27 +104,31 @@ def test_drop_model__ok():
 
 
 def test_rename_model__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        editor.alter_db_table(Model, 'old_name', 'new_name')
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER TABLE RENAME is unsafe operation'):
+            editor.alter_db_table(Model, 'old_name', 'new_name')
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_rename_model__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        editor.alter_db_table(Model, 'old_name', 'old_name')
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER TABLE RENAME is unsafe operation'):
+            editor.alter_db_table(Model, 'old_name', 'old_name')
 
 
 def test_change_model_tablespace__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        editor.alter_db_table(Model, 'old_tablespace', 'new_tablespace')
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER TABLE SET TABLESPACE is unsafe operation'):
+            editor.alter_db_tablespace(Model, 'old_tablespace', 'new_tablespace')
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_change_model_tablespace__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        editor.alter_db_table(Model, 'old_tablespace', 'new_tablespace')
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER TABLE SET TABLESPACE is unsafe operation'):
+            editor.alter_db_tablespace(Model, 'old_tablespace', 'new_tablespace')
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
@@ -124,12 +141,13 @@ def test_add_field__ok():
 
 
 def test_add_field_with_default__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        field = models.CharField(max_length=40, default='test')
-        field.set_attributes_from_name('field')
-        editor.add_field(Model, field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ADD COLUMN DEFAULT is unsafe operation'):
+            field = models.CharField(max_length=40, default='test', null=True)
+            field.set_attributes_from_name('field')
+            editor.add_field(Model, field)
     assert editor.collected_sql == timeouts(
-        'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) DEFAULT \'test\' NOT NULL;'
+        'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) DEFAULT \'test\' NULL;'
     ) + timeouts(
         'ALTER TABLE "tests_model" ALTER COLUMN "field" DROP DEFAULT;'
     )
@@ -137,35 +155,39 @@ def test_add_field_with_default__warning():
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_add_field_with_default__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        field = models.CharField(max_length=40, default='test')
-        field.set_attributes_from_name('field')
-        editor.add_field(Model, field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ADD COLUMN DEFAULT is unsafe operation'):
+            field = models.CharField(max_length=40, default='test', null=True)
+            field.set_attributes_from_name('field')
+            editor.add_field(Model, field)
 
 
 def test_add_field_with_not_null__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        field = models.CharField(max_length=40, null=False)
-        field.set_attributes_from_name('field')
-        editor.add_field(Model, field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ADD COLUMN NOT NULL is unsafe operation'):
+            field = models.CharField(max_length=40, null=False)
+            field.set_attributes_from_name('field')
+            editor.add_field(Model, field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_add_field_with_not_null__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        field = models.CharField(max_length=40, null=False)
-        field.set_attributes_from_name('field')
-        editor.add_field(Model, field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ADD COLUMN NOT NULL is unsafe operation'):
+            field = models.CharField(max_length=40, null=False)
+            field.set_attributes_from_name('field')
+            editor.add_field(Model, field)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
                    ZERO_DOWNTIME_MIGRATIONS_USE_NOT_NULL=True)
 def test_add_field_with_not_null__allowed_for_all_tables__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        field = models.CharField(max_length=40, null=False)
-        field.set_attributes_from_name('field')
-        editor.add_field(Model, field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ADD COLUMN NOT NULL is unsafe operation'):
+            field = models.CharField(max_length=40, null=False)
+            field.set_attributes_from_name('field')
+            editor.add_field(Model, field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
@@ -173,10 +195,11 @@ def test_add_field_with_not_null__allowed_for_all_tables__warning():
                    ZERO_DOWNTIME_MIGRATIONS_USE_NOT_NULL=10)
 def test_add_field_with_not_null__allowed_for_small_tables__warning(mocker):
     mocker.patch.object(connection, 'cursor')().__enter__().fetchone.return_value = (5,)
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        field = models.CharField(max_length=40, null=False)
-        field.set_attributes_from_name('field')
-        editor.add_field(Model, field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ADD COLUMN NOT NULL is unsafe operation'):
+            field = models.CharField(max_length=40, null=False)
+            field.set_attributes_from_name('field')
+            editor.add_field(Model, field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
@@ -332,23 +355,30 @@ def test_add_field_with_unique__ok():
         field = models.CharField(max_length=40, null=True, unique=True)
         field.set_attributes_from_name('field')
         editor.add_field(Model, field)
-    assert editor.collected_sql == timeouts(
-        'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
-    ) + [
-        'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
-    ] + timeouts(
-        'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
-        'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
-    ) + [
-        'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    ]
-    # assert editor.collected_sql == TIMEOUTS + [
-    #     'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
-    #     'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
-    #     'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
-    #     'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
-    #     'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    # ]
+    if django.VERSION[:2] == (2, 0):
+        assert editor.collected_sql == timeouts(
+            'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
+        ) + [
+            'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
+        ] + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
+            'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
+        ) + [
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        ]
+    else:
+        assert editor.collected_sql == timeouts(
+            'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
+        ) + [
+            'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
+        ] + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
+            'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
+        ) + [
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        ]
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
@@ -358,43 +388,52 @@ def test_add_field_with_unique__with_flexible_timeout__ok():
         field = models.CharField(max_length=40, null=True, unique=True)
         field.set_attributes_from_name('field')
         editor.add_field(Model, field)
-    assert editor.collected_sql == timeouts(
-        'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
-    ) + flexible_statement_timeout(
-        'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
-    ) + timeouts(
-        'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
-        'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
-    ) + flexible_statement_timeout(
-        'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    )
-    # assert editor.collected_sql == TIMEOUTS + [
-    #     'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
-    #     'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
-    #     'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
-    #     'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
-    #     'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    # ]
+    if django.VERSION[:2] == (2, 0):
+        assert editor.collected_sql == timeouts(
+            'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
+        ) + flexible_statement_timeout(
+            'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
+        ) + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
+            'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
+        ) + flexible_statement_timeout(
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        )
+    else:
+        assert editor.collected_sql == timeouts(
+            'ALTER TABLE "tests_model" ADD COLUMN "field" varchar(40) NULL;',
+        ) + flexible_statement_timeout(
+            'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
+        ) + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
+            'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
+        ) + flexible_statement_timeout(
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        )
 
 
 def test_alter_field_varchar40_to_varchar20__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.CharField(max_length=40)
-        old_field.set_attributes_from_name('field')
-        new_field = models.CharField(max_length=20)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
-        assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.CharField(max_length=40)
+            old_field.set_attributes_from_name('field')
+            new_field = models.CharField(max_length=20)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
+            assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_alter_field_varchar40_to_varchar20_error():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        old_field = models.CharField(max_length=40)
-        old_field.set_attributes_from_name('field')
-        new_field = models.CharField(max_length=20)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.CharField(max_length=40)
+            old_field.set_attributes_from_name('field')
+            new_field = models.CharField(max_length=20)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
@@ -420,23 +459,25 @@ def test_alter_field_varchar40_to_text__ok():
 
 
 def test_alter_field_decimal10_2_to_decimal5_2__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.DecimalField(max_digits=10, decimal_places=2)
-        old_field.set_attributes_from_name('field')
-        new_field = models.DecimalField(max_digits=5, decimal_places=2)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.DecimalField(max_digits=10, decimal_places=2)
+            old_field.set_attributes_from_name('field')
+            new_field = models.DecimalField(max_digits=5, decimal_places=2)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_alter_field_decimal10_2_to_decimal5_2__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        old_field = models.DecimalField(max_digits=10, decimal_places=2)
-        old_field.set_attributes_from_name('field')
-        new_field = models.DecimalField(max_digits=5, decimal_places=2)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.DecimalField(max_digits=10, decimal_places=2)
+            old_field.set_attributes_from_name('field')
+            new_field = models.DecimalField(max_digits=5, decimal_places=2)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
@@ -451,74 +492,81 @@ def test_alter_field_decimal10_2_to_decimal20_2__ok():
 
 
 def test_alter_field_decimal10_2_to_decimal10_3__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.DecimalField(max_digits=10, decimal_places=2)
-        old_field.set_attributes_from_name('field')
-        new_field = models.DecimalField(max_digits=10, decimal_places=3)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.DecimalField(max_digits=10, decimal_places=2)
+            old_field.set_attributes_from_name('field')
+            new_field = models.DecimalField(max_digits=10, decimal_places=3)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_alter_field_decimal10_2_to_decimal10_3__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        old_field = models.DecimalField(max_digits=10, decimal_places=2)
-        old_field.set_attributes_from_name('field')
-        new_field = models.DecimalField(max_digits=10, decimal_places=3)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.DecimalField(max_digits=10, decimal_places=2)
+            old_field.set_attributes_from_name('field')
+            new_field = models.DecimalField(max_digits=10, decimal_places=3)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
 
 
 def test_alter_field_decimal10_2_to_decimal10_1__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.DecimalField(max_digits=10, decimal_places=2)
-        old_field.set_attributes_from_name('field')
-        new_field = models.DecimalField(max_digits=10, decimal_places=1)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.DecimalField(max_digits=10, decimal_places=2)
+            old_field.set_attributes_from_name('field')
+            new_field = models.DecimalField(max_digits=10, decimal_places=1)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_alter_field_decimal10_2_to_decimal10_1__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        old_field = models.DecimalField(max_digits=10, decimal_places=2)
-        old_field.set_attributes_from_name('field')
-        new_field = models.DecimalField(max_digits=10, decimal_places=1)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER COLUMN TYPE is unsafe operation'):
+            old_field = models.DecimalField(max_digits=10, decimal_places=2)
+            old_field.set_attributes_from_name('field')
+            new_field = models.DecimalField(max_digits=10, decimal_places=1)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
 
 
 def test_alter_field_set_not_null__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.CharField(max_length=40, null=True)
-        old_field.set_attributes_from_name('field')
-        new_field = models.CharField(max_length=40, null=False)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN NOT NULL is unsafe operation'):
+            old_field = models.CharField(max_length=40, null=True)
+            old_field.set_attributes_from_name('field')
+            new_field = models.CharField(max_length=40, null=False)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_alter_field_set_not_null__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        old_field = models.CharField(max_length=40, null=True)
-        old_field.set_attributes_from_name('field')
-        new_field = models.CharField(max_length=40, null=False)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER COLUMN NOT NULL is unsafe operation'):
+            old_field = models.CharField(max_length=40, null=True)
+            old_field.set_attributes_from_name('field')
+            new_field = models.CharField(max_length=40, null=False)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
                    ZERO_DOWNTIME_MIGRATIONS_USE_NOT_NULL=True)
 def test_alter_field_set_not_null__allowed_for_all_tables__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.CharField(max_length=40, null=True)
-        old_field.set_attributes_from_name('field')
-        new_field = models.CharField(max_length=40, null=False)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN NOT NULL is unsafe operation'):
+            old_field = models.CharField(max_length=40, null=True)
+            old_field.set_attributes_from_name('field')
+            new_field = models.CharField(max_length=40, null=False)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
@@ -526,12 +574,13 @@ def test_alter_field_set_not_null__allowed_for_all_tables__warning():
                    ZERO_DOWNTIME_MIGRATIONS_USE_NOT_NULL=10)
 def test_alter_field_set_not_null__allowed_for_small_tables__warning(mocker):
     mocker.patch.object(connection, 'cursor')().__enter__().fetchone.return_value = (5,)
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.CharField(max_length=40, null=True)
-        old_field.set_attributes_from_name('field')
-        new_field = models.CharField(max_length=40, null=False)
-        new_field.set_attributes_from_name('field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER COLUMN NOT NULL is unsafe operation'):
+            old_field = models.CharField(max_length=40, null=True)
+            old_field.set_attributes_from_name('field')
+            new_field = models.CharField(max_length=40, null=False)
+            new_field.set_attributes_from_name('field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
@@ -660,23 +709,25 @@ def test_alter_field_drop_default__ok():
 
 
 def test_rename_field__warning():
-    with cmp_schema_editor() as editor, pytest.warns(UnsafeOperationWarning):
-        old_field = models.CharField(max_length=40)
-        old_field.set_attributes_from_name('old_field')
-        new_field = models.CharField(max_length=40)
-        new_field.set_attributes_from_name('new_field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.warns(UnsafeOperationWarning, match='ALTER TABLE RENAME COLUMN is unsafe operation'):
+            old_field = models.CharField(max_length=40)
+            old_field.set_attributes_from_name('old_field')
+            new_field = models.CharField(max_length=40)
+            new_field.set_attributes_from_name('new_field')
+            editor.alter_field(Model, old_field, new_field)
     assert editor.collected_sql == timeouts(editor.core_editor.collected_sql)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
 def test_rename_field__raise():
-    with cmp_schema_editor() as editor, pytest.raises(UnsafeOperationException):
-        old_field = models.CharField(max_length=40)
-        old_field.set_attributes_from_name('old_field')
-        new_field = models.CharField(max_length=40)
-        new_field.set_attributes_from_name('new_field')
-        editor.alter_field(Model, old_field, new_field)
+    with cmp_schema_editor() as editor:
+        with pytest.raises(UnsafeOperationException, match='ALTER TABLE RENAME COLUMN is unsafe operation'):
+            old_field = models.CharField(max_length=40)
+            old_field.set_attributes_from_name('old_field')
+            new_field = models.CharField(max_length=40)
+            new_field.set_attributes_from_name('new_field')
+            editor.alter_field(Model, old_field, new_field)
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
@@ -881,20 +932,26 @@ def test_alter_field_add_constraint_unique__ok():
         new_field = models.CharField(max_length=40, unique=True)
         new_field.set_attributes_from_name('field')
         editor.alter_field(Model, old_field, new_field)
-    assert editor.collected_sql == [
-        'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
-    ] + timeouts(
-        'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
-        'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
-    ) + [
-        'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    ]
-    # assert editor.collected_sql == TIMEOUTS + [
-    #     'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
-    #     'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
-    #     'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
-    #     'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    # ]
+    if django.VERSION[:2] == (2, 0):
+        assert editor.collected_sql == [
+            'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
+        ] + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
+            'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
+        ) + [
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        ]
+    else:
+        assert editor.collected_sql == [
+            'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
+        ] + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
+            'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
+        ) + [
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        ]
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
@@ -906,20 +963,26 @@ def test_alter_field_add_constraint_unique__with_flexible_timeout__ok():
         new_field = models.CharField(max_length=40, unique=True)
         new_field.set_attributes_from_name('field')
         editor.alter_field(Model, old_field, new_field)
-    assert editor.collected_sql == flexible_statement_timeout(
-        'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
-    ) + timeouts(
-        'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
-        'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
-    ) + flexible_statement_timeout(
-        'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    )
-    # assert editor.collected_sql == TIMEOUTS + [
-    #     'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
-    #     'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
-    #     'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
-    #     'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" ON "tests_model" ("field" varchar_pattern_ops);',
-    # ]
+    if django.VERSION[:2] == (2, 0):
+        assert editor.collected_sql == flexible_statement_timeout(
+            'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field_0a53d95f_uniq ON "tests_model" ("field");',
+        ) + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field_0a53d95f_uniq '
+            'UNIQUE USING INDEX tests_model_field_0a53d95f_uniq;',
+        ) + flexible_statement_timeout(
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        )
+    else:
+        assert editor.collected_sql == flexible_statement_timeout(
+            'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field_0a53d95f_uniq" ON "tests_model" ("field");',
+        ) + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field_0a53d95f_uniq" '
+            'UNIQUE USING INDEX "tests_model_field_0a53d95f_uniq";',
+        ) + flexible_statement_timeout(
+            'CREATE INDEX CONCURRENTLY "tests_model_field_0a53d95f_like" '
+            'ON "tests_model" ("field" varchar_pattern_ops);',
+        )
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
@@ -1013,19 +1076,22 @@ def test_add_unique_together__ok(mocker):
     mocker.patch.object(connection, 'cursor')
     with cmp_schema_editor() as editor:
         editor.alter_unique_together(Model, [], [['field1', 'field2']])
-    assert editor.collected_sql == [
-        'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field1_field2_51878e08_uniq '
-        'ON "tests_model" ("field1", "field2");',
-    ] + timeouts(
-        'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field1_field2_51878e08_uniq '
-        'UNIQUE USING INDEX tests_model_field1_field2_51878e08_uniq;',
-    )
-    # assert editor.collected_sql == TIMEOUTS + [
-    #     'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field1_field2_51878e08_uniq" '
-    #     'ON "tests_model" ("field1", "field2");',
-    #     'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field1_field2_51878e08_uniq" '
-    #     'UNIQUE USING INDEX "tests_model_field1_field2_51878e08_uniq";',
-    # ]
+    if django.VERSION[:2] == (2, 0):
+        assert editor.collected_sql == [
+            'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field1_field2_51878e08_uniq '
+            'ON "tests_model" ("field1", "field2");',
+        ] + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field1_field2_51878e08_uniq '
+            'UNIQUE USING INDEX tests_model_field1_field2_51878e08_uniq;',
+        )
+    else:
+        assert editor.collected_sql == [
+            'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field1_field2_51878e08_uniq" '
+            'ON "tests_model" ("field1", "field2");',
+        ] + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field1_field2_51878e08_uniq" '
+            'UNIQUE USING INDEX "tests_model_field1_field2_51878e08_uniq";',
+        )
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
@@ -1034,19 +1100,22 @@ def test_add_unique_together__with_flexible_timeout__ok(mocker):
     mocker.patch.object(connection, 'cursor')
     with cmp_schema_editor() as editor:
         editor.alter_unique_together(Model, [], [['field1', 'field2']])
-    assert editor.collected_sql == flexible_statement_timeout(
-        'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field1_field2_51878e08_uniq '
-        'ON "tests_model" ("field1", "field2");',
-    ) + timeouts(
-        'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field1_field2_51878e08_uniq '
-        'UNIQUE USING INDEX tests_model_field1_field2_51878e08_uniq;',
-    )
-    # assert editor.collected_sql == TIMEOUTS + [
-    #     'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field1_field2_51878e08_uniq" '
-    #     'ON "tests_model" ("field1", "field2");',
-    #     'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field1_field2_51878e08_uniq" '
-    #     'UNIQUE USING INDEX "tests_model_field1_field2_51878e08_uniq";',
-    # ]
+    if django.VERSION[:2] == (2, 0):
+        assert editor.collected_sql == flexible_statement_timeout(
+            'CREATE UNIQUE INDEX CONCURRENTLY tests_model_field1_field2_51878e08_uniq '
+            'ON "tests_model" ("field1", "field2");',
+        ) + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT tests_model_field1_field2_51878e08_uniq '
+            'UNIQUE USING INDEX tests_model_field1_field2_51878e08_uniq;',
+        )
+    else:
+        assert editor.collected_sql == flexible_statement_timeout(
+            'CREATE UNIQUE INDEX CONCURRENTLY "tests_model_field1_field2_51878e08_uniq" '
+            'ON "tests_model" ("field1", "field2");',
+        ) + timeouts(
+            'ALTER TABLE "tests_model" ADD CONSTRAINT "tests_model_field1_field2_51878e08_uniq" '
+            'UNIQUE USING INDEX "tests_model_field1_field2_51878e08_uniq";',
+        )
 
 
 @override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
@@ -1113,4 +1182,177 @@ def test_remove_index_together__ok(mocker):
         editor.alter_index_together(Model, [['field1', 'field2']], [])
     assert editor.collected_sql == [
         'DROP INDEX CONCURRENTLY IF EXISTS "tests_model_field_idx";',
+    ]
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_check_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.CheckConstraint(check=models.Q(field1__gt=0), name='field1_gt_0'))
+    assert editor.collected_sql == timeouts(
+        'ALTER TABLE "tests_model" ADD CONSTRAINT "field1_gt_0" '
+        'CHECK ("field1" > 0) NOT VALID;',
+    ) + [
+        'ALTER TABLE "tests_model" VALIDATE CONSTRAINT "field1_gt_0";',
+    ]
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
+                   ZERO_DOWNTIME_MIGRATIONS_FLEXIBLE_STATEMENT_TIMEOUT=True)
+def test_add_meta_check_constraint__with_flexible_timeout__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.CheckConstraint(check=models.Q(field1__gt=0), name='field1_gt_0'))
+    assert editor.collected_sql == timeouts(
+        'ALTER TABLE "tests_model" ADD CONSTRAINT "field1_gt_0" '
+        'CHECK ("field1" > 0) NOT VALID;',
+    ) + flexible_statement_timeout(
+        'ALTER TABLE "tests_model" VALIDATE CONSTRAINT "field1_gt_0";',
+    )
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_drop_meta_check_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.remove_constraint(Model, models.CheckConstraint(check=models.Q(field1__gt=0), name='field1_gt_0'))
+    assert editor.collected_sql == timeouts(
+        'ALTER TABLE "tests_model" DROP CONSTRAINT "field1_gt_0";',
+    )
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_unique_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.UniqueConstraint(fields=('field1',), name='field1_uniq'))
+    assert editor.collected_sql == [
+        'CREATE UNIQUE INDEX CONCURRENTLY "field1_uniq" ON "tests_model" ("field1");',
+    ] + timeouts(
+        'ALTER TABLE "tests_model" ADD CONSTRAINT "field1_uniq" '
+        'UNIQUE USING INDEX "field1_uniq";',
+    )
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
+                   ZERO_DOWNTIME_MIGRATIONS_FLEXIBLE_STATEMENT_TIMEOUT=True)
+def test_add_meta_unique_constraint__with_flexible_timeout__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.UniqueConstraint(fields=('field1',), name='field1_uniq'))
+    assert editor.collected_sql == flexible_statement_timeout(
+        'CREATE UNIQUE INDEX CONCURRENTLY "field1_uniq" ON "tests_model" ("field1");',
+    ) + timeouts(
+        'ALTER TABLE "tests_model" ADD CONSTRAINT "field1_uniq" '
+        'UNIQUE USING INDEX "field1_uniq";',
+    )
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_multicolumn_unique_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.UniqueConstraint(fields=('field1', 'field2'), name='field1_field2_uniq'))
+    assert editor.collected_sql == [
+        'CREATE UNIQUE INDEX CONCURRENTLY "field1_field2_uniq" ON "tests_model" ("field1", "field2");',
+    ] + timeouts(
+        'ALTER TABLE "tests_model" ADD CONSTRAINT "field1_field2_uniq" '
+        'UNIQUE USING INDEX "field1_field2_uniq";',
+    )
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_conditional_unique_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.UniqueConstraint(
+            fields=('field1',), name='field1_uniq', condition=models.Q(field1__gt=0)))
+    assert editor.collected_sql == [
+        'CREATE UNIQUE INDEX CONCURRENTLY "field1_uniq" ON "tests_model" ("field1") WHERE "field1" > 0;',
+    ]
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_conditional_multicolumn_unique_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_constraint(Model, models.UniqueConstraint(
+            fields=('field1', 'field2'), name='field1_field2_uniq', condition=models.Q(field1=models.F('field2'))))
+    assert editor.collected_sql == [
+        'CREATE UNIQUE INDEX CONCURRENTLY "field1_field2_uniq" ON "tests_model" ("field1", "field2") '
+        'WHERE "field1" = ("field2");',
+    ]
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_drop_meta_unique_constraint__ok():
+    with cmp_schema_editor() as editor:
+        editor.remove_constraint(Model, models.UniqueConstraint(fields=('field1',), name='field1_uniq'))
+    assert editor.collected_sql == timeouts(
+        'ALTER TABLE "tests_model" DROP CONSTRAINT "field1_uniq";',
+    )
+
+
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_index__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_index(Model, models.Index(fields=['field1'], name='tests_model_field1_9b60dc_idx'))
+    assert editor.collected_sql == [
+        'CREATE INDEX CONCURRENTLY "tests_model_field1_9b60dc_idx" '
+        'ON "tests_model" ("field1");',
+    ]
+
+
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True,
+                   ZERO_DOWNTIME_MIGRATIONS_FLEXIBLE_STATEMENT_TIMEOUT=True)
+def test_add_meta_index__with_flexible_timeout__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_index(Model, models.Index(fields=['field1'], name='tests_model_field1_9b60dc_idx'))
+    assert editor.collected_sql == flexible_statement_timeout(
+        'CREATE INDEX CONCURRENTLY "tests_model_field1_9b60dc_idx" '
+        'ON "tests_model" ("field1");',
+    )
+
+
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_multicolumn_index__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_index(Model, models.Index(fields=['field1', 'field2'], name='tests_model_field1_45bc7f_idx'))
+    assert editor.collected_sql == [
+        'CREATE INDEX CONCURRENTLY "tests_model_field1_45bc7f_idx" '
+        'ON "tests_model" ("field1", "field2");',
+    ]
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_conditional_index__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_index(Model, models.Index(condition=models.Q(field1__gt=0), fields=['field1'], name='field1_idx'))
+    assert editor.collected_sql == [
+        'CREATE INDEX CONCURRENTLY "field1_idx" '
+        'ON "tests_model" ("field1") WHERE "tests_model"."field1" > 0;',
+    ]
+
+
+@pytest.mark.skipif(django.VERSION[:2] < (2, 2), reason='functionality provided in django 2.2')
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_add_meta_conditional_multicolumn_index__ok():
+    with cmp_schema_editor() as editor:
+        editor.add_index(Model, models.Index(condition=models.Q(field1__gt=0), fields=['field1', 'field2'],
+                                             name='field1_field2_idx'))
+    assert editor.collected_sql == [
+        'CREATE INDEX CONCURRENTLY "field1_field2_idx" '
+        'ON "tests_model" ("field1", "field2") WHERE "tests_model"."field1" > 0;',
+    ]
+
+
+@override_settings(ZERO_DOWNTIME_MIGRATIONS_RAISE_FOR_UNSAFE=True)
+def test_drop_meta_index__ok():
+    with cmp_schema_editor() as editor:
+        editor.remove_index(Model, models.Index(fields=['field1'], name='tests_model_field1_9b60dc_idx'))
+    assert editor.collected_sql == [
+        'DROP INDEX CONCURRENTLY IF EXISTS "tests_model_field1_9b60dc_idx";',
     ]

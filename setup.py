@@ -2,13 +2,12 @@ from setuptools import find_packages, setup
 
 setup(
     name='django-pg-zero-downtime-migrations',
-    version='0.2',
-    author='Paveł Tyślacki',
-    author_email='pavel.tyslacki@gmail.com',
+    version='0.5',
+    author='JB2001216',
     license='MIT',
-    url='https://github.com/tbicr/django-pg-zero-downtime-migrations',
+    url='https://github.com/JB2001216/Django',
     description='Django postgresql backend that apply migrations with respect to database locks',
-    long_description=open('README.md').read(),
+    long_description=open('README.md').read() + '\n\n' + open('CHANGES.md').read(),
     long_description_content_type='text/markdown',
     classifiers=[
         'Development Status :: 4 - Beta',
@@ -22,6 +21,7 @@ setup(
         'Framework :: Django',
         'Framework :: Django :: 2.0',
         'Framework :: Django :: 2.1',
+        'Framework :: Django :: 2.2',
     ],
     keywords='django postgres postgresql migrations',
     packages=find_packages(exclude=['tests*']),
